@@ -1,0 +1,7 @@
+{
+  "name": "Creative Suite AI",
+  "description": "An all-in-one AI-powered creative suite to generate and edit stories, images, and videos using the Gemini API.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
