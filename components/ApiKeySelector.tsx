@@ -11,8 +11,14 @@ const ApiKeySelector: React.FC<ApiKeySelectorProps> = ({ children }) => {
 
   const checkApiKey = useCallback(async () => {
     try {
-      const selected = await window.aistudio.hasSelectedApiKey();
-      setHasApiKey(selected);
+      if (window.aistudio) {
+        const selected = await window.aistudio.hasSelectedApiKey();
+        setHasApiKey(selected);
+      } else {
+        // Fallback when aistudio is not present in the environment
+        console.warn("AIStudio object not found on window");
+        setHasApiKey(false);
+      }
     } catch (e) {
       console.error("Error checking for API key:", e);
       setError("Não foi possível verificar o status da chave de API. Por favor, tente novamente.");
@@ -26,9 +32,13 @@ const ApiKeySelector: React.FC<ApiKeySelectorProps> = ({ children }) => {
 
   const handleSelectKey = async () => {
     try {
-      await window.aistudio.openSelectKey();
-      // Assume success to avoid race condition and immediately allow user to proceed.
-      setHasApiKey(true); 
+      if (window.aistudio) {
+        await window.aistudio.openSelectKey();
+        // Assume success to avoid race condition and immediately allow user to proceed.
+        setHasApiKey(true); 
+      } else {
+        setError("Funcionalidade de seleção de chave não disponível neste ambiente.");
+      }
     } catch (e) {
       console.error("Error opening API key selection:", e);
       setError("Falha ao abrir o diálogo de seleção de chave de API.");

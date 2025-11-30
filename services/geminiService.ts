@@ -37,18 +37,17 @@ const withRetry = async <T>(apiCall: () => Promise<T>, maxRetries = 3, initialDe
 
 
 // This function creates a new AI client.
-// It's used for Veo models to ensure the latest API key is picked up after user selection.
+// It's used to ensure the latest API key is picked up after user selection.
 const getAIClient = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 // BUG FIX: Encapsulate video polling logic to avoid code duplication and improve maintainability.
 const pollVideoOperation = async (initialOperation: Lro): Promise<string> => {
-    const localAi = getAIClient();
     let operation = initialOperation;
 
     while (!operation.done) {
         await sleep(5000); // Wait 5 seconds between polls
         try {
-            operation = await withRetry(() => localAi.operations.getVideosOperation({ operation }));
+            operation = await withRetry(() => getAIClient().operations.getVideosOperation({ operation }));
         } catch (e: any) {
             console.error("Polling failed:", e);
             throw new Error("A verificação do status da geração do vídeo falhou.");
@@ -65,8 +64,6 @@ const pollVideoOperation = async (initialOperation: Lro): Promise<string> => {
     const videoBlob = await videoResponse.blob();
     return URL.createObjectURL(videoBlob);
 }
-
-const ai = getAIClient();
 
 const storySchema = {
   type: Type.OBJECT,
@@ -101,15 +98,25 @@ interface StoryDataResponse {
 }
 
 
-export const createStorybook = async (topic: string, numPages: number): Promise<Omit<StoryPage, 'imageUrl'>[]> => {
+export const createStorybook = async (
+    topic: string, 
+    numPages: number,
+    typography: string = "Legível e Moderna",
+    coverStyle: string = "Livro infantil colorido e fofo"
+): Promise<Omit<StoryPage, 'imageUrl'>[]> => {
     const prompt = `Crie um pequeno livro de histórias para crianças sobre "${topic}".
     A história deve ter uma capa e ${numPages} páginas de história.
-    Para cada página, forneça uma narrativa e um comando de imagem detalhado e criativo para gerar uma ilustração.
-    O tom deve ser divertido, envolvente e apropriado para crianças pequenas.
-    O estilo de arte deve ser 'livro de histórias infantil fofo, arte digital colorida'.`;
+    
+    Diretrizes de Estilo:
+    1. Estilo Visual Geral (Capa e Ilustrações): "${coverStyle}". Incorpore palavras-chave deste estilo em TODOS os 'image_prompt'.
+    2. Estilo Tipográfico Sugerido (Conceito): "${typography}". O título e o clima da narrativa devem combinar com esta vibração.
+    
+    Para cada página, forneça uma narrativa e um comando de imagem (image_prompt) detalhado.
+    O 'image_prompt' deve descrever a cena visualmente, mencionando o estilo artístico "${coverStyle}".
+    O tom da narrativa deve ser divertido, envolvente e apropriado para crianças pequenas.`;
 
-    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-        model: 'gemini-2.5-pro',
+    const response: GenerateContentResponse = await withRetry(() => getAIClient().models.generateContent({
+        model: 'gemini-3-pro-preview',
         contents: prompt,
         config: {
             responseMimeType: "application/json",
@@ -126,7 +133,7 @@ export const createStorybook = async (topic: string, numPages: number): Promise<
         page: 'Capa',
         title: storyData.title,
         narrative: `Uma história sobre ${topic}`,
-        image_prompt: coverPageData?.image_prompt || `Capa de livro de histórias infantil fofa para uma história sobre ${topic}, título: "${storyData.title}", arte digital colorida`,
+        image_prompt: coverPageData?.image_prompt || `Capa de livro de histórias infantil, estilo ${coverStyle}, título: "${storyData.title}", arte digital vibrante`,
     };
     
     const storyPages: Omit<StoryPage, 'imageUrl'>[] = storyData.pages
@@ -141,9 +148,9 @@ export const createStorybook = async (topic: string, numPages: number): Promise<
 };
 
 export const generateStoryPageImage = async (prompt: string): Promise<string> => {
-    const response: GenerateImagesResponse = await withRetry(() => ai.models.generateImages({
+    const response: GenerateImagesResponse = await withRetry(() => getAIClient().models.generateImages({
         model: 'imagen-4.0-generate-001',
-        prompt: `${prompt}, estilo de livro de histórias infantil fofo, arte digital colorida`,
+        prompt: `${prompt}, high quality, detailed, children's book illustration`,
         config: {
           numberOfImages: 1,
           outputMimeType: 'image/png',
@@ -154,14 +161,14 @@ export const generateStoryPageImage = async (prompt: string): Promise<string> =>
     return response.generatedImages[0].image.imageBytes;
 };
 
-export const generateImage = async (prompt: string): Promise<string> => {
-    const response: GenerateImagesResponse = await withRetry(() => ai.models.generateImages({
+export const generateImage = async (prompt: string, aspectRatio: string = '1:1'): Promise<string> => {
+    const response: GenerateImagesResponse = await withRetry(() => getAIClient().models.generateImages({
         model: 'imagen-4.0-generate-001',
         prompt: prompt,
         config: {
           numberOfImages: 1,
           outputMimeType: 'image/png',
-          aspectRatio: '1:1',
+          aspectRatio: aspectRatio,
         },
     }));
 
@@ -169,7 +176,7 @@ export const generateImage = async (prompt: string): Promise<string> => {
 };
 
 export const editImage = async (base64ImageData: string, mimeType: string, prompt: string): Promise<string> => {
-    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
+    const response: GenerateContentResponse = await withRetry(() => getAIClient().models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: {
             parts: [
@@ -187,17 +194,20 @@ export const editImage = async (base64ImageData: string, mimeType: string, promp
         },
     }));
     
-    const part = response.candidates?.[0]?.content?.parts?.[0];
-    if (part && part.inlineData) {
-        return part.inlineData.data;
+    // FIX: Iterate through parts to find the image part, as it might not be the first one.
+    if (response.candidates?.[0]?.content?.parts) {
+        for (const part of response.candidates[0].content.parts) {
+            if (part.inlineData) {
+                return part.inlineData.data;
+            }
+        }
     }
     throw new Error("Nenhuma imagem editada foi retornada pela API.");
 };
 
 
 export const generateVideoFromText = async (prompt: string, aspectRatio: '16:9' | '9:16'): Promise<string> => {
-    const localAi = getAIClient();
-    const initialOperation: Lro = await withRetry(() => localAi.models.generateVideos({
+    const initialOperation: Lro = await withRetry(() => getAIClient().models.generateVideos({
         model: 'veo-3.1-fast-generate-preview',
         prompt: prompt,
         config: {
@@ -210,8 +220,7 @@ export const generateVideoFromText = async (prompt: string, aspectRatio: '16:9' 
 };
 
 export const generateVideoFromImage = async (base64Image: string, mimeType: string, prompt: string, aspectRatio: '16:9' | '9:16'): Promise<string> => {
-    const localAi = getAIClient();
-    const initialOperation: Lro = await withRetry(() => localAi.models.generateVideos({
+    const initialOperation: Lro = await withRetry(() => getAIClient().models.generateVideos({
         model: 'veo-3.1-fast-generate-preview',
         prompt: prompt,
         image: {
@@ -228,8 +237,8 @@ export const generateVideoFromImage = async (base64Image: string, mimeType: stri
 };
 
 export const analyzeImage = async (base64ImageData: string, mimeType: string, prompt: string): Promise<string> => {
-    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-        model: 'gemini-2.5-pro',
+    const response: GenerateContentResponse = await withRetry(() => getAIClient().models.generateContent({
+        model: 'gemini-3-pro-preview',
         contents: {
             parts: [
                 {
@@ -257,8 +266,8 @@ export const analyzeVideoFrames = async (frames: { data: string, mimeType: strin
         }
     }));
 
-    const response: GenerateContentResponse = await withRetry(() => ai.models.generateContent({
-        model: 'gemini-2.5-pro',
+    const response: GenerateContentResponse = await withRetry(() => getAIClient().models.generateContent({
+        model: 'gemini-3-pro-preview',
         contents: {
             parts: [
                 ...imageParts,
