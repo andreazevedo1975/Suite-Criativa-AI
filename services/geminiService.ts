@@ -6,32 +6,47 @@ import { StoryPage } from '../types';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Wrapper function to handle rate limiting with exponential backoff
-const withRetry = async <T>(apiCall: () => Promise<T>, maxRetries = 3, initialDelay = 1000): Promise<T> => {
+// INCREASED RETRIES AND DELAY to handle "Quota Exceeded" errors more robustly
+const withRetry = async <T>(apiCall: () => Promise<T>, maxRetries = 8, initialDelay = 4000): Promise<T> => {
     let delay = initialDelay;
     for (let i = 0; i < maxRetries; i++) {
         try {
             return await apiCall();
         } catch (error: any) {
-            // Check if the error is a rate limit error (often status 429)
-            // The Gemini API client might not expose status codes directly, so we check the message.
-            const isRateLimitError = error.message?.includes('429') || error.message?.toLowerCase().includes('quota');
+            // Check if the error is a rate limit error (status 429) or Service Unavailable (503)
+            // The Gemini API client might return different error structures, so we check various properties.
+            const errorMessage = error.message?.toLowerCase() || '';
+            const isRateLimitError = errorMessage.includes('429') || 
+                                     errorMessage.includes('quota') || 
+                                     errorMessage.includes('resource_exhausted');
+            const isServerBusy = errorMessage.includes('503') || errorMessage.includes('overloaded');
 
-            if (isRateLimitError && i < maxRetries - 1) {
-                console.warn(`Rate limit hit. Retrying in ${delay}ms...`);
+            if ((isRateLimitError || isServerBusy) && i < maxRetries - 1) {
+                console.warn(`API Error (${isRateLimitError ? 'Rate Limit' : 'Server Busy'}). Retrying in ${delay}ms...`);
                 await sleep(delay);
-                delay *= 2; // Exponential backoff
+                // Add a small jitter to avoid thundering herd if multiple requests retry at once
+                const jitter = Math.random() * 500;
+                delay = Math.min(delay * 1.5 + jitter, 60000); // Exponential backoff capped at 60s
             } else {
+                // If it's the last retry or a different error, throw user-friendly message
                 let userFriendlyError = "Ocorreu um erro ao se comunicar com a API.";
+                
                 if (isRateLimitError) {
                     userFriendlyError = "Você excedeu sua cota de API. Por favor, verifique seu plano e detalhes de faturamento ou tente novamente mais tarde. Para mais informações, acesse: https://ai.google.dev/gemini-api/docs/rate-limits";
+                } else if (isServerBusy) {
+                    userFriendlyError = "Os servidores da IA estão sobrecarregados no momento. Tentando novamente...";
                 } else if (error.message) {
                     userFriendlyError = error.message;
                 }
-                throw new Error(userFriendlyError);
+                
+                // Only throw if we are done retrying
+                if (i === maxRetries - 1) {
+                    throw new Error(userFriendlyError);
+                }
             }
         }
     }
-    // This line should theoretically not be reached
+    // This line should theoretically not be reached due to the throw inside the loop
     throw new Error("Falha na chamada à API após múltiplas tentativas.");
 };
 
@@ -102,21 +117,26 @@ export const createStorybook = async (
     topic: string, 
     numPages: number,
     typography: string = "Legível e Moderna",
-    coverStyle: string = "Livro infantil colorido e fofo"
+    coverStyle: string = "Livro infantil colorido e fofo",
+    coverFormat: string = "Capa Digital Padrão"
 ): Promise<Omit<StoryPage, 'imageUrl'>[]> => {
     const prompt = `Crie um pequeno livro de histórias para crianças sobre "${topic}".
     A história deve ter uma capa e ${numPages} páginas de história.
     
     Diretrizes de Estilo:
-    1. Estilo Visual Geral (Capa e Ilustrações): "${coverStyle}". Incorpore palavras-chave deste estilo em TODOS os 'image_prompt'.
+    1. Estilo Visual Geral (Arte): "${coverStyle}". Incorpore palavras-chave deste estilo em TODOS os 'image_prompt'.
     2. Estilo Tipográfico Sugerido (Conceito): "${typography}". O título e o clima da narrativa devem combinar com esta vibração.
+    3. Formato/Modelo da Capa (Apenas para a página 'Capa'): "${coverFormat}". A descrição visual da capa deve incluir explicitamente características deste formato físico ou digital.
     
     Para cada página, forneça uma narrativa e um comando de imagem (image_prompt) detalhado.
     O 'image_prompt' deve descrever a cena visualmente, mencionando o estilo artístico "${coverStyle}".
     O tom da narrativa deve ser divertido, envolvente e apropriado para crianças pequenas.`;
 
+    // CHANGED: Switched from 'gemini-3-pro-preview' to 'gemini-2.5-flash'
+    // Reason: 'gemini-2.5-flash' has significantly higher rate limits (RPM/TPM) than 3-pro on the free tier,
+    // reducing "Quota Exceeded" errors while still providing excellent quality for creative writing.
     const response: GenerateContentResponse = await withRetry(() => getAIClient().models.generateContent({
-        model: 'gemini-3-pro-preview',
+        model: 'gemini-2.5-flash',
         contents: prompt,
         config: {
             responseMimeType: "application/json",
@@ -133,7 +153,7 @@ export const createStorybook = async (
         page: 'Capa',
         title: storyData.title,
         narrative: `Uma história sobre ${topic}`,
-        image_prompt: coverPageData?.image_prompt || `Capa de livro de histórias infantil, estilo ${coverStyle}, título: "${storyData.title}", arte digital vibrante`,
+        image_prompt: coverPageData?.image_prompt || `Capa de livro de histórias infantil, estilo ${coverStyle}, formato ${coverFormat}, título: "${storyData.title}", arte digital vibrante`,
     };
     
     const storyPages: Omit<StoryPage, 'imageUrl'>[] = storyData.pages
@@ -237,6 +257,8 @@ export const generateVideoFromImage = async (base64Image: string, mimeType: stri
 };
 
 export const analyzeImage = async (base64ImageData: string, mimeType: string, prompt: string): Promise<string> => {
+    // Kept 3-pro here as logic/analysis benefits from the larger model, 
+    // but the updated withRetry logic will handle the rate limits better.
     const response: GenerateContentResponse = await withRetry(() => getAIClient().models.generateContent({
         model: 'gemini-3-pro-preview',
         contents: {

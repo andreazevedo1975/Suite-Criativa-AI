@@ -1,7 +1,7 @@
+
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { generateVideoFromText, generateVideoFromImage } from '../services/geminiService';
 import { fileToBase64 } from '../utils/fileUtils';
-import ApiKeySelector from './ApiKeySelector';
 import Loader from './Loader';
 
 type VideoTab = 'fromText' | 'fromImage';
@@ -14,11 +14,7 @@ const loadingMessages = [
     "Finalizando o corte do diretor...",
 ];
 
-interface VideoStudioContentProps {
-  resetApiKey?: () => void;
-}
-
-const VideoStudioContent: React.FC<VideoStudioContentProps> = ({ resetApiKey }) => {
+const VideoStudio: React.FC = () => {
   const [activeTab, setActiveTab] = useState<VideoTab>('fromText');
   const [prompt, setPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState<'16:9' | '9:16'>('16:9');
@@ -100,15 +96,11 @@ const VideoStudioContent: React.FC<VideoStudioContentProps> = ({ resetApiKey }) 
     } catch (e: any) {
       console.error(e);
       let errorMessage = e.message || "Falha ao gerar o vídeo. Por favor, tente novamente.";
-      if (e.message?.includes("Requested entity was not found")) {
-        errorMessage = "Chave de API não encontrada ou inválida. Por favor, selecione uma chave válida.";
-        resetApiKey?.();
-      }
       setError(errorMessage);
     } finally {
       setLoading(false);
     }
-  }, [prompt, aspectRatio, activeTab, imageFile, resetApiKey, videoUrl]);
+  }, [prompt, aspectRatio, activeTab, imageFile, videoUrl]);
 
   const togglePlay = () => {
     if (videoRef.current) {
@@ -246,11 +238,5 @@ const VideoStudioContent: React.FC<VideoStudioContentProps> = ({ resetApiKey }) 
     </div>
   );
 };
-
-const VideoStudio: React.FC = () => (
-  <ApiKeySelector>
-    <VideoStudioContent />
-  </ApiKeySelector>
-);
 
 export default VideoStudio;
